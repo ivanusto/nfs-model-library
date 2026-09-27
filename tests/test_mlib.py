@@ -60,6 +60,18 @@ class Library(unittest.TestCase):
         # readers need no tool
         subprocess.run(["sha256sum", "-c", "--quiet", "SHA256SUMS"], cwd=d, check=True)
 
+    @unittest.skipIf(os.geteuid() == 0, "root ignores permissions")
+    def test_frozen_entry_rejects_writes(self):
+        # On a NAS share with per-user ACLs, 0444 alone does not stop the owner;
+        # run this suite with TMPDIR on the NFS mount to check the real library.
+        d = self.make("llm/org/m/aaa", {"a": b"1"})
+        self.mlib("ingest", "llm/org/m/aaa", "--source", "s")
+        with self.assertRaises(PermissionError):
+            open(os.path.join(d, "a"), "ab").close()
+        with self.assertRaises(PermissionError):
+            open(os.path.join(d, "new"), "wb").close()
+        self.mlib("retire", "llm/org/m/aaa")   # thaw must still work
+
     def test_ingest_refuses_twice(self):
         self.ingest("llm/org/m/aaa")
         self.assertIn("retire it", self.mlib("ingest", "llm/org/m/aaa", "--source", "s", rc=1))

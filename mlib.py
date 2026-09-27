@@ -44,7 +44,7 @@ Commands:
 Only the standard library is used. `add` needs the `hf` CLI (huggingface_hub),
 `pull` needs `ollama`.
 """
-import argparse, datetime as dt, hashlib, json, os, re, shutil, subprocess, sys, time
+import argparse, datetime as dt, hashlib, json, os, re, shutil, struct, subprocess, sys, time
 import urllib.error, urllib.parse, urllib.request
 
 ROOT = os.environ.get("MLIB_ROOT", "./library")
@@ -205,14 +205,41 @@ def append_manifest(r, row):
         f.flush(); os.fsync(f.fileno())
 
 
+NFS4_ACL = "system.nfs4_acl"
+ACE_READ = 0x1 | 0x8 | 0x80 | 0x20000 | 0x100000   # data, named attrs, attrs, acl, synchronize
+ACE_OWNER = ACE_READ | 0x100 | 0x40000             # owner keeps chmod/setacl, so thaw works
+ACE_EXEC = 0x20
+
+
+def nfs4_acl_readonly(path, isdir):
+    """A NAS share with per-user ACLs (QuTS hero on ZFS, aclmode=passthrough)
+    grants write through named ACEs that chmod does not touch, so 0444 alone is
+    only what ls shows. Replace the ACL with OWNER@/GROUP@/EVERYONE@ read-only.
+    Returns False where there is no NFSv4 ACL (local disk, NFSv3)."""
+    try:
+        os.getxattr(path, NFS4_ACL)
+    except OSError:
+        return False
+    x = ACE_EXEC if isdir else 0
+    aces = [(ACE_OWNER | x, "OWNER@"), (ACE_READ | x, "GROUP@"), (ACE_READ | x, "EVERYONE@")]
+    b = struct.pack(">I", len(aces))
+    for mask, who in aces:   # XDR: type ALLOW=0, flags 0, mask, who as padded string
+        w = who.encode()
+        b += struct.pack(">IIII", 0, 0, mask, len(w)) + w + b"\0" * (-len(w) % 4)
+    os.setxattr(path, NFS4_ACL, b)
+    return True
+
+
 def freeze(d):
     """Files 0444, directories 0555 under the entry: readers cannot alter, and
     neither can a careless librarian without chmod first."""
     for dirpath, dirnames, filenames in os.walk(d):
         for fn in filenames:
             os.chmod(os.path.join(dirpath, fn), 0o444)
+            nfs4_acl_readonly(os.path.join(dirpath, fn), False)
     for dirpath, dirnames, filenames in os.walk(d, topdown=False):
         os.chmod(dirpath, 0o555)
+        nfs4_acl_readonly(dirpath, True)
 
 
 def thaw(d):

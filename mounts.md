@@ -22,6 +22,11 @@ Write each node as a single address (`/32`). A network entry such as
 `192.0.2.0/24` makes every node on it a writer or none of them; and
 `192.0.2.0/32` matches only the address `.0`, that is, nobody.
 
+The shared folder keeps per-user ACLs on ZFS, and `chmod` does not touch
+them: `mlib.py` replaces an entry's NFSv4 ACL when it freezes it, see the
+README. Run `mlib.py` as an ordinary user on the librarian, not root; with
+"Squash no users" root ignores every permission, frozen or not.
+
 ## On the librarian (read-write)
 
 ```

@@ -27,6 +27,7 @@ Entries are frozen after ingest (files 0444, directories 0555). To replace one, 
 Notes:
 
 - `hf download` 0.36 keeps only the last of repeated `--include` flags, so `add` runs one download per pattern against the same commit.
-- Not yet tested on a real NFS mount: the `mkdir` lock and `os.replace` are assumed atomic there.
+- On a NAS share with per-user ACLs (QuTS hero on ZFS, `aclmode=passthrough`), `chmod 0444` does not stop anyone the share ACL lets write. When an entry carries an NFSv4 ACL (`system.nfs4_acl`), freezing replaces it with read-only `OWNER@`/`GROUP@`/`EVERYONE@` entries; the owner keeps the right to chmod, so `retire` can thaw it.
+- Tested on a real NFSv4.1 mount (`hard,nconnect=4`) from two nodes at once: 2 x 1500 lock/replace/append rounds, no lost update, no torn manifest row. Run the suite there with `TMPDIR=<mount>/tmp python3 -m unittest discover -s tests` as a non-root user.
 
 Apache-2.0.
