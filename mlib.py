@@ -223,15 +223,29 @@ ACE_OWNER = ACE_READ | 0x100 | 0x40000             # owner keeps chmod/setacl, s
 ACE_EXEC = 0x20
 
 
+ACE_WRITE = 0x2 | 0x4                               # write data, append data / add file, subdir
+
+
+def nfs4_aces(b):
+    """Decode system.nfs4_acl (XDR) into (type, flags, mask, who)."""
+    n, = struct.unpack(">I", b[:4]); off, out = 4, []
+    for _ in range(n):
+        t, f, m, l = struct.unpack(">IIII", b[off:off + 16]); off += 16
+        out.append((t, f, m, b[off:off + l].decode())); off += (l + 3) & ~3
+    return out
+
+
 def nfs4_acl_readonly(path, isdir):
     """A NAS share with per-user ACLs (QuTS hero on ZFS, aclmode=passthrough)
     grants write through named ACEs that chmod does not touch, so 0444 alone is
     only what ls shows. Replace the ACL with OWNER@/GROUP@/EVERYONE@ read-only.
-    Returns False where there is no NFSv4 ACL (local disk, NFSv3)."""
+    Returns "none" where there is no NFSv4 ACL (local disk, NFSv3), "ignored"
+    where the server accepted the write but kept a writable ACL (QuTS hero with
+    Advanced Folder Permissions on does this silently), else "ok"."""
     try:
         os.getxattr(path, NFS4_ACL)
     except OSError:
-        return False
+        return "none"
     x = ACE_EXEC if isdir else 0
     aces = [(ACE_OWNER | x, "OWNER@"), (ACE_READ | x, "GROUP@"), (ACE_READ | x, "EVERYONE@")]
     b = struct.pack(">I", len(aces))
@@ -239,19 +253,23 @@ def nfs4_acl_readonly(path, isdir):
         w = who.encode()
         b += struct.pack(">IIII", 0, 0, mask, len(w)) + w + b"\0" * (-len(w) % 4)
     os.setxattr(path, NFS4_ACL, b)
-    return True
+    after = nfs4_aces(os.getxattr(path, NFS4_ACL))
+    return "ignored" if any(t == 0 and m & ACE_WRITE for t, _, m, _ in after) else "ok"
 
 
 def freeze(d):
     """Files 0444, directories 0555 under the entry: readers cannot alter, and
-    neither can a careless librarian without chmod first."""
+    neither can a careless librarian without chmod first. Returns False when
+    the share kept granting write anyway."""
+    results = set()
     for dirpath, dirnames, filenames in os.walk(d):
         for fn in filenames:
             os.chmod(os.path.join(dirpath, fn), 0o444)
-            nfs4_acl_readonly(os.path.join(dirpath, fn), False)
+            results.add(nfs4_acl_readonly(os.path.join(dirpath, fn), False))
     for dirpath, dirnames, filenames in os.walk(d, topdown=False):
         os.chmod(dirpath, 0o555)
-        nfs4_acl_readonly(dirpath, True)
+        results.add(nfs4_acl_readonly(dirpath, True))
+    return "ignored" not in results
 
 
 def thaw(d):
@@ -344,13 +362,17 @@ def ingest(r, entry, source, revision="", license="", note=""):
         if os.path.exists(os.path.join(d, SUMS)):   # another ingest finished first
             sys.exit(done)
         sums_hash = write_sums(d, lines)
-        freeze(d)
+        frozen = freeze(d)
         append_manifest(r, {
             "added_at": now(), "entry": entry, "source": source,
             "revision": revision or "", "bytes": total, "files": n,
             "sha256_of_sums": sums_hash, "license": license or "",
             "added_by": who(), "note": note or ""})
     print(f"ingested {entry}: {n} files, {total / 2**30:.1f} GiB, SHA256SUMS {sums_hash[:12]}")
+    if not frozen:
+        print(f"warning: the NAS kept a writable ACL on {entry}; it shows 0444 but is not "
+              f"write-protected (QuTS hero: turn off Advanced Folder Permissions on this "
+              f"share). verify is the only guard.", file=sys.stderr)
 
 
 def cmd_ingest(a):
