@@ -28,6 +28,7 @@ Notes:
 
 - `hf download` 0.36 keeps only the last of repeated `--include` flags, so `add` runs one download per pattern against the same commit.
 - On a NAS share with per-user ACLs (QuTS hero on ZFS, `aclmode=passthrough`), `chmod 0444` does not stop anyone the share ACL lets write. When an entry carries an NFSv4 ACL (`system.nfs4_acl`), freezing replaces it with read-only `OWNER@`/`GROUP@`/`EVERYONE@` entries; the owner keeps the right to chmod, so `retire` can thaw it.
-- Tested on a real NFSv4.1 mount (`hard,nconnect=4`) from two nodes at once: 2 x 1500 lock/replace/append rounds, no lost update, no torn manifest row. Run the suite there with `TMPDIR=<mount>/tmp python3 -m unittest discover -s tests` as a non-root user.
+- Tested on a real NFSv4.1 mount (`hard,nconnect=4`) from two nodes at once: 2 x 1500 lock/replace/append rounds, no lost update, no torn manifest row. The same loop kept running through a NAS reboot (7 min outage): with `hard` both nodes stalled 540 s and resumed without an error, an `ingest` hashing 16 GiB finished and verified, while a `soft` mount returned EIO 14.6 GiB into a read.
+- A librarian that dies holding the lock leaves `.lock` behind; others give up after about five minutes and print its owner (host, pid, time). Check the pid is gone, look at the manifest tail, remove `.lock`. Run the suite there with `TMPDIR=<mount>/tmp python3 -m unittest discover -s tests` as a non-root user.
 
 Apache-2.0.

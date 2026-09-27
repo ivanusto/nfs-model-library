@@ -102,7 +102,13 @@ class Lock:
                     shutil.rmtree(self.path, ignore_errors=True)
                     continue
                 time.sleep(5)
-        sys.exit(f"could not take {self.path}; another librarian is writing")
+        try:
+            with open(os.path.join(self.path, "owner")) as f:
+                owner = f.read().strip()
+        except OSError:
+            owner = "unknown"
+        sys.exit(f"could not take {self.path}, held by {owner}; if that process is gone, "
+                 f"check the manifest tail and remove {self.path}")
 
     def __exit__(self, *a):
         shutil.rmtree(self.path, ignore_errors=True)
@@ -152,7 +158,9 @@ def walk_files(d):
             yield os.path.relpath(full, d), full
 
 
-def write_sums(d):
+def hash_entry(d):
+    """The slow part, done without the lock: hashing 155 GB takes minutes and
+    other librarians give up after five."""
     lines, total, n = [], 0, 0
     for rel, full in walk_files(d):
         if "\n" in rel or "\\" in rel:
@@ -162,13 +170,17 @@ def write_sums(d):
         n += 1
     if n == 0:
         sys.exit(f"no files under {d}")
+    return lines, total, n
+
+
+def write_sums(d, lines):
     tmp = os.path.join(d, SUMS + ".tmp")
     with open(tmp, "w") as f:
         f.writelines(lines)
         f.flush(); os.fsync(f.fileno())
     os.replace(tmp, os.path.join(d, SUMS))
     os.chmod(os.path.join(d, SUMS), 0o444)
-    return total, n, sha256_file(os.path.join(d, SUMS))
+    return sha256_file(os.path.join(d, SUMS))
 
 
 def read_manifest(r):
@@ -324,10 +336,14 @@ def ingest(r, entry, source, revision="", license="", note=""):
     d = entry_dir(r, entry)
     if not os.path.isdir(d):
         sys.exit(f"not a directory: {d}")
+    done = f"{entry} already has {SUMS}; retire it and add or ingest again"
+    if os.path.exists(os.path.join(d, SUMS)):
+        sys.exit(done)
+    lines, total, n = hash_entry(d)
     with Lock(r):
-        if os.path.exists(os.path.join(d, SUMS)):
-            sys.exit(f"{entry} already has {SUMS}; retire it and add or ingest again")
-        total, n, sums_hash = write_sums(d)
+        if os.path.exists(os.path.join(d, SUMS)):   # another ingest finished first
+            sys.exit(done)
+        sums_hash = write_sums(d, lines)
         freeze(d)
         append_manifest(r, {
             "added_at": now(), "entry": entry, "source": source,
